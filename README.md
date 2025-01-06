@@ -12,7 +12,7 @@ source venv/bin/activate   `
 python3 -m pip install -r requirements.txt   `
 
 4. Start the agent: `bash
-python3 agent.py start   `
+streamlit run app/main.py   `
 
 ### Troubleshooting
 
