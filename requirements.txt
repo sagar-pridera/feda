@@ -4,3 +4,5 @@ langchain-core==0.3.29
 langchain-community==0.3.14
 langchain_groq==0.2.2
 pandas==2.2.3
+firebase-admin==6.1.0
+python-dotenv==1.0.1
