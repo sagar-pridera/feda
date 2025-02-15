@@ -9,7 +9,7 @@ class LLMService:
     def __init__(self, api_key: Optional[str] = None, model: str = "llama-3.3-70b-versatile"):
         """Initialize the LLM service with API key and model"""
         load_dotenv()
-        self.api_key = api_key or "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"
+        self.api_key = api_key or os.getenv("GROQ_API_KEY")
         if not self.api_key:
             raise ValueError("GROQ API key must be provided either directly or through GROQ_API_KEY environment variable")
         
