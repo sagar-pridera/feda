@@ -1,3 +1,5 @@
+import json
+import streamlit as st
 from typing import Dict, Optional
 from datetime import datetime
 import firebase_admin
@@ -10,18 +12,29 @@ class DatabaseService:
         """Initialize the Firebase database service"""
         load_dotenv()
         
-        # Use provided credentials path or get from environment
-        self.cred_path = cred_path or os.getenv("FIREBASE_CRED_PATH")
-        if not self.cred_path:
-            raise ValueError("Firebase credentials path must be provided either directly or through FIREBASE_CRED_PATH environment variable")
-        
+        # Try to get credentials from different sources
+        self.cred_dict = self._get_credentials(cred_path)
         self.db = None
         self.collection_name = 'processed_feedback'
+
+    def _get_credentials(self, cred_path: Optional[str] = None):
+        """Get credentials from file or Streamlit secrets"""
+        # First try Streamlit secrets
+        try:
+            return json.loads(st.secrets["firebase"]["service_account_key"])
+        except (KeyError, AttributeError):
+            # If not in Streamlit Cloud, try local file
+            local_cred_path = cred_path or os.getenv("FIREBASE_CRED_PATH")
+            if not local_cred_path or not os.path.exists(local_cred_path):
+                raise ValueError("Firebase credentials not found in Streamlit secrets or local file")
+            
+            with open(local_cred_path) as f:
+                return json.load(f)
 
     async def initialize(self):
         """Initialize Firebase connection"""
         if not firebase_admin._apps:
-            cred = credentials.Certificate(self.cred_path)
+            cred = credentials.Certificate(self.cred_dict)
             firebase_admin.initialize_app(cred)
         
         self.db = firestore.client()
