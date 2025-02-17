@@ -46,7 +46,7 @@ def main():
                 data = pd.DataFrame({'Content': [content]})
 
             # Display the dataframe
-            st.write("### Data Preview:")
+            st.write("### 📊 Data Preview:")
             st.dataframe(data, height=300)
 
             # Let user select the feedback and email columns
@@ -62,7 +62,7 @@ def main():
 
             # Process feedback for each row
             if st.button("Process Feedback"):
-                st.write("### Processing Results:")
+                st.write("### ⚙️ Processing Results:")
                 
                 progress_bar = st.progress(0)
                 
@@ -100,7 +100,7 @@ def main():
                     columns_order = ['email', 'original_feedback', 'sentiment', 'categories', 'summary', 'created_at']
                     results_df = results_df[columns_order]
                     
-                    st.write("### Processed Feedback Results:")
+                    st.write("### 📝 Processed Feedback Results:")
                     st.dataframe(
                         results_df,
                         column_config={
@@ -124,7 +124,7 @@ def main():
                         )
                         
                         # First show the common issues chart
-                        st.write("### Common Issues Analysis:")
+                        st.write("### 📈 Common Issues Analysis:")
                         issues_df = pd.DataFrame(
                             list(common_issues.items()), 
                             columns=['Category', 'Count']
@@ -132,7 +132,7 @@ def main():
                         st.bar_chart(issues_df.set_index('Category'))
 
                         # Then show the detailed category analysis
-                        st.write("### Detailed Category Breakdown:")
+                        st.write("### 🔍 Detailed Category Breakdown:")
                         
                         # Create a DataFrame for category details
                         detailed_analysis = []
@@ -157,7 +157,7 @@ def main():
                         
                         # Create and display the detailed table
                         for analysis in detailed_analysis:
-                            with st.expander(f"📊 {analysis['Category']} ({analysis['Count']} items)"):
+                            with st.expander(f"{analysis['Category'].capitalize()} ({analysis['Count']} items)"):
                                 examples_df = pd.DataFrame(analysis['Examples'])
                                 st.dataframe(
                                     examples_df,
@@ -179,7 +179,7 @@ def main():
                                 )
 
         except Exception as e:
-            st.error(f"Error processing file: {e}")
+            st.error(f"⚠️ Error processing file: {e}")
             logging.error(f"Error details: ", exc_info=True)
 
 if __name__ == "__main__":
