@@ -11,6 +11,7 @@ import logging
 
 from .models.llm_models import ModelName, FeedbackResponse, FeedbackSentiment
 from .config.llm_config import LLMConfig, PromptTemplates
+from .models.categories import Categories
 
 logger = logging.getLogger(__name__)
 
@@ -62,15 +63,7 @@ class LLMService:
             raise ValueError(f"Error parsing response: {str(e)}")
 
     async def process_feedback(self, feedback: str) -> Dict:
-        """
-        Process a single piece of feedback
-        
-        Args:
-            feedback (str): The feedback text to analyze
-            
-        Returns:
-            Dict: Validated and formatted feedback analysis
-        """
+        """Process a single piece of feedback"""
         try:
             messages = [
                 {
@@ -87,16 +80,20 @@ class LLMService:
             parsed_response = self._parse_llm_response(response)
             
             return {
-                "sentiment": parsed_response.sentiment.value,
-                "categories": parsed_response.categories,
+                "sentiment": parsed_response.sentiment,
+                "category": parsed_response.category,
+                "subcategory": parsed_response.subcategory,
+                "details": parsed_response.details,
                 "summary": parsed_response.summary
             }
 
         except Exception as e:
-            self.logger.error(f"Error processing feedback: {str(e)}")
+            logger.error(f"Error processing feedback: {str(e)}")
             return {
-                "sentiment": FeedbackSentiment.NEUTRAL.value,
-                "categories": ["Error Processing"],
+                "sentiment": "neutral",
+                "category": "Error",
+                "subcategory": "Processing Error",
+                "details": ["error_processing"],
                 "summary": f"Error processing feedback: {str(e)}"
             }
 
@@ -138,9 +135,14 @@ class LLMService:
         """
         prompt = f"""Analyze each feedback item and provide a JSON array of results.
 Each result should have:
-- sentiment: exactly one of "positive", "negative", or "neutral"
-- categories: array of relevant category tags
-- summary: one concise summary line
+- sentiment: exactly one of "positive", "negative", "neutral"
+- category: one of {list(Categories.CATEGORIES.keys())}
+- subcategory: specific subcategory from the category
+- details: array of specific details
+- summary: one clear, concise summary line
+
+Categories and Subcategories:
+{json.dumps(Categories.CATEGORIES, indent=2)}
 
 Feedback items to analyze:
 {json.dumps(feedbacks, indent=2)}
@@ -163,15 +165,32 @@ Respond with a JSON array of results only, no additional text."""
             results = json.loads(response)
             
             # Validate each result
-            return [FeedbackResponse(**result).dict() for result in results]
+            validated_results = []
+            for result in results:
+                try:
+                    validated_result = FeedbackResponse(**result).dict()
+                    validated_results.append(validated_result)
+                except Exception as e:
+                    logger.error(f"Validation error for result: {str(e)}")
+                    validated_results.append({
+                        "sentiment": "neutral",
+                        "category": "Error",
+                        "subcategory": "Validation Error",
+                        "details": ["error_processing"],
+                        "summary": f"Error validating feedback: {str(e)}"
+                    })
+            
+            return validated_results
 
         except Exception as e:
             logger.error(f"Error in batch processing: {str(e)}")
             # Return error results for each feedback
             return [
                 {
-                    "sentiment": FeedbackSentiment.NEUTRAL.value,
-                    "categories": ["Error Processing"],
+                    "sentiment": "neutral",
+                    "category": "Error",
+                    "subcategory": "Processing Error",
+                    "details": ["error_processing"],
                     "summary": f"Error processing feedback: {str(e)}"
                 }
                 for _ in feedbacks

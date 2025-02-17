@@ -16,7 +16,7 @@ from datetime import datetime
 
 from .llm_service import LLMService, ModelName
 from .database_service import DatabaseService
-from .models.feedback_models import FeedbackItem, ProcessedFeedback
+from .models.feedback_models import FeedbackItem, ProcessedFeedback, Categories
 from .config.processing_config import BatchConfig
 
 # Configure logging
@@ -44,61 +44,54 @@ class FeedbackProcessor:
         self.batch_size = BatchConfig.validate_batch_size(batch_size)
 
     async def process_feedback_batch(self, feedback_items: List[Dict]) -> List[Dict]:
-        """
-        Process a batch of feedback items efficiently
-        
-        Args:
-            feedback_items: List of dictionaries containing feedback data
-            
-        Returns:
-            List of processed feedback results as dictionaries
-        """
+        """Process a batch of feedback items efficiently"""
         results: List[ProcessedFeedback] = []
         
-        # Process in batches to minimize API calls
-        for i in range(0, len(feedback_items), self.batch_size):
-            batch = feedback_items[i:i + self.batch_size]
-            
-            try:
-                # Convert batch to FeedbackItems
-                feedback_batch = [
-                    FeedbackItem(
-                        text=item['feedback'],
-                        email=item.get('email', '')
-                    ) for item in batch
-                ]
+        try:
+            # Convert batch to FeedbackItems
+            feedback_batch = [
+                FeedbackItem(
+                    text=item['feedback'],
+                    email=item.get('email', '')
+                ) for item in feedback_items
+            ]
 
-                # Process entire batch at once
-                processed_batch = await self._process_feedback_batch(feedback_batch)
-                
-                # Save results and add to output
-                for feedback_item, processed_result in zip(feedback_batch, processed_batch):
+            # Process entire batch at once
+            processed_batch = await self._process_feedback_batch(feedback_batch)
+            
+            # Save results and add to output
+            for feedback_item, processed_result in zip(feedback_batch, processed_batch):
+                try:
                     result = ProcessedFeedback(
                         email=feedback_item.email,
                         original_feedback=feedback_item.text,
                         sentiment=processed_result['sentiment'],
-                        categories=processed_result['categories'],
+                        category=processed_result['category'],
+                        subcategory=processed_result['subcategory'],
+                        details=processed_result.get('details', ['general_feedback']),
                         summary=processed_result['summary'],
                         created_at=datetime.now().isoformat()
                     )
                     await self.db_service.save_processed_feedback(result.to_dict())
                     results.append(result)
+                except Exception as e:
+                    logger.error(f"Error processing individual feedback: {str(e)}")
+                    results.append(ProcessedFeedback.create_error_response(
+                        feedback_item,
+                        f"Processing error: {str(e)}"
+                    ))
                 
-            except Exception as e:
-                logger.error(f"Error processing batch: {str(e)}", exc_info=True)
-                # Add error results for the entire batch
-                for item in batch:
-                    feedback_item = FeedbackItem(
-                        text=item['feedback'],
-                        email=item.get('email', '')
-                    )
-                    error_result = ProcessedFeedback.create_error_response(
-                        feedback_item, 
-                        f"Batch processing error: {str(e)}"
-                    )
-                    results.append(error_result)
-                
-        # Convert all results to dictionaries before returning
+        except Exception as e:
+            logger.error(f"Error in batch processing: {str(e)}")
+            # Add error results for the entire batch
+            results.extend([
+                ProcessedFeedback.create_error_response(
+                    FeedbackItem(text=item['feedback'], email=item.get('email', '')),
+                    f"Batch processing error: {str(e)}"
+                )
+                for item in feedback_items
+            ])
+        
         return [result.to_dict() for result in results]
 
     async def _process_feedback_batch(self, feedback_items: List[FeedbackItem]) -> List[Dict]:
@@ -117,7 +110,7 @@ class FeedbackProcessor:
         # Process entire batch in one API call
         return await self.llm_service.process_feedback_batch(feedback_texts)
 
-    async def analyze_common_issues(self, feedbacks: List[str]) -> Dict[str, int]:
+    async def analyze_common_issues(self, feedbacks: List[str]) -> Dict[str, Dict[str, int]]:
         """
         Analyze multiple pieces of feedback to identify common issues
         
@@ -125,9 +118,9 @@ class FeedbackProcessor:
             feedbacks: List of feedback texts to analyze
             
         Returns:
-            Dictionary mapping issue categories to their frequency
+            Dictionary mapping categories to their subcategories and counts
         """
-        all_categories: List[str] = []
+        category_analysis = {}
         
         # Process in batches
         for i in range(0, len(feedbacks), self.batch_size):
@@ -135,12 +128,22 @@ class FeedbackProcessor:
             try:
                 batch_results = await self.llm_service.process_feedback_batch(batch)
                 for result in batch_results:
-                    all_categories.extend(result['categories'])
+                    category = result['category']
+                    subcategory = result['subcategory']
+                    
+                    if category not in category_analysis:
+                        category_analysis[category] = {}
+                        
+                    if subcategory not in category_analysis[category]:
+                        category_analysis[category][subcategory] = 0
+                        
+                    category_analysis[category][subcategory] += 1
+                    
             except Exception as e:
                 logger.error(f"Error in batch analysis: {str(e)}", exc_info=True)
                 continue
 
-        return self._count_and_sort_categories(all_categories)
+        return category_analysis
 
     @staticmethod
     def _count_and_sort_categories(categories: List[str]) -> Dict[str, int]:

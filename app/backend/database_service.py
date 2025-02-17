@@ -9,6 +9,7 @@ from datetime import datetime
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,10 @@ class DatabaseService:
             # Ensure created_at is in ISO format
             if 'created_at' not in feedback_data:
                 feedback_data['created_at'] = datetime.now().isoformat()
+
+            # Convert details to JSONB if it's a list
+            if isinstance(feedback_data.get('details'), list):
+                feedback_data['details'] = json.dumps(feedback_data['details'])
 
             # Insert data and return the ID
             result = self.client.table(self.table_name)\
