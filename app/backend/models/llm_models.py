@@ -27,6 +27,30 @@ class FeedbackResponse(BaseModel):
     details: List[str] = Field(default_factory=lambda: ["general_feedback"])
     summary: str = Field(..., min_length=10, max_length=200)
 
+    @validator('sentiment', pre=True)
+    def validate_sentiment(cls, v):
+        """Normalize sentiment values"""
+        if isinstance(v, str):
+            # Map common variations to valid sentiments
+            sentiment_mapping = {
+                'positive': 'positive',
+                'praise': 'positive',
+                'good': 'positive',
+                'great': 'positive',
+                'negative': 'negative',
+                'bad': 'negative',
+                'issue': 'negative',
+                'problem': 'negative',
+                'bug': 'negative',
+                'neutral': 'neutral',
+                'suggestion': 'neutral',
+                'feature_request': 'neutral',
+                'request': 'neutral'
+            }
+            normalized = sentiment_mapping.get(v.lower(), 'neutral')
+            return FeedbackSentiment(normalized)
+        return v
+
     @validator('category')
     def validate_category(cls, category):
         """Ensure category is from predefined list"""

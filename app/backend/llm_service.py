@@ -168,6 +168,10 @@ Respond with a JSON array of results only, no additional text."""
             validated_results = []
             for result in results:
                 try:
+                    # Ensure sentiment is valid before validation
+                    if 'sentiment' not in result or result['sentiment'] not in ['positive', 'negative', 'neutral']:
+                        result['sentiment'] = 'neutral'  # Default to neutral for invalid sentiments
+                    
                     validated_result = FeedbackResponse(**result).dict()
                     validated_results.append(validated_result)
                 except Exception as e:

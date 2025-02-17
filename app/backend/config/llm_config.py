@@ -22,9 +22,19 @@ Use predefined categories and tags for classification."""
     "sentiment": "positive" | "negative" | "neutral",
     "category": "<main_category>",
     "subcategory": "<specific_subcategory>",
-    "tag": ["specific_tag1", "specific_tag2"],
+    "details": ["specific_detail1", "specific_detail2"],
     "summary": "One clear, concise summary line"
 }
+
+Guidelines for sentiment:
+- positive: for praise, appreciation, satisfaction
+- negative: for complaints, issues, problems
+- neutral: for suggestions, feature requests, or neutral statements
+
+For example:
+- "This app is great!" → sentiment: "positive"
+- "App keeps crashing" → sentiment: "negative"
+- "Need dark mode" → sentiment: "neutral"
 
 Guidelines for categorization and tagging:
 1. Bug & Issues: 

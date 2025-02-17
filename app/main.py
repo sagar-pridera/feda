@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 from backend.process_feedback_service import FeedbackProcessor
 from backend.llm_service import ModelName
 import asyncio
@@ -79,22 +80,27 @@ def main():
                     
                     # Show total items to be processed
                     total_items = len(feedback_data)
-                    
+                    processed_count = 0
+                    failed_count = 0
+                    results = []
                     
                     # Process in batches
-                    results = []
                     total_batches = (len(feedback_data) + batch_size - 1) // batch_size
                     
                     for i in range(0, len(feedback_data), batch_size):
                         batch = feedback_data[i:i + batch_size]
                         with st.spinner(f'Processing batch {(i//batch_size)+1}/{total_batches}...'):
                             try:
-                                # Add logging for batch processing
-                                st.write(f"Processing batch of {len(batch)} items...")
-                                
                                 batch_results = asyncio.run(
                                     processor.process_feedback_batch(batch)
                                 )
+                                
+                                # Count processed and failed items
+                                for result in batch_results:
+                                    if result.get('category') == 'Error':
+                                        failed_count += 1
+                                    else:
+                                        processed_count += 1
                                 
                                 # Log any failed items in the batch
                                 for j, result in enumerate(batch_results):
@@ -110,36 +116,37 @@ def main():
                             except Exception as e:
                                 st.error(f"Batch processing error: {str(e)}")
                                 logging.error(f"Error processing batch: {str(e)}", exc_info=True)
-                                # Add error results for the batch
-                                results.extend([
+                                # Add error results for the batch and count them
+                                error_results = [
                                     ProcessedFeedback.create_error_response(
                                         FeedbackItem(text=item['feedback'], email=item.get('email', '')),
                                         f"Batch processing error: {str(e)}"
                                     ).to_dict()
                                     for item in batch
-                                ])
+                                ]
+                                results.extend(error_results)
+                                failed_count += len(error_results)
                             
                             # Update progress
                             progress_bar.progress((i + len(batch)) / len(feedback_data))
                     
-                    # Show summary of processing
-                    successful_results = [r for r in results if r['category'] != 'Error']
-                    error_results = [r for r in results if r['category'] == 'Error']
-                    
+                    # Show summary with accurate counts
                     st.write(f"""
                     ### Processing Summary:
                     - Total items: {total_items}
-                    - Successfully processed: {len(successful_results)}
-                    - Failed to process: {len(error_results)}
+                    - Successfully processed: {processed_count}
+                    - Failed to process: {failed_count}
+                    - Missing/Skipped: {total_items - (processed_count + failed_count)}
                     """)
                     
-                    if error_results:
+                    if failed_count > 0:
                         with st.expander("Show Processing Errors"):
-                            for error in error_results:
-                                st.error(f"""
-                                Failed feedback: {error['original_feedback'][:100]}...
-                                Error: {error['summary']}
-                                """)
+                            for result in results:
+                                if result.get('category') == 'Error':
+                                    st.error(f"""
+                                    Failed feedback: {result['original_feedback'][:100]}...
+                                    Error: {result['summary']}
+                                    """)
                     
                     # Convert results to DataFrame for display
                     if len(results) > 0:
@@ -170,14 +177,11 @@ def main():
                             hide_index=False
                         )
                         
-                        # Show analysis
+                        # Show category distribution
                         if len(results) > 1:
                             with st.spinner('Analyzing feedback...'):
-                                # Get all valid results (excluding errors)
                                 valid_results = [r for r in results if r['category'] != 'Error']
-                                
                                 if valid_results:
-                                    # Show category distribution
                                     st.write("### 📊 Category Distribution")
                                     
                                     # Create analysis dictionary
@@ -230,6 +234,169 @@ def main():
                                                 },
                                                 hide_index=True
                                             )
+
+                        # Add missed items section at the correct level
+                        missed_count = total_items - (processed_count + failed_count)
+                        if missed_count > 0:
+                            st.write("### ⚠️ Missed or Skipped Items")
+                            
+                            # Find items that weren't processed
+                            processed_emails = {r['email'] for r in results}
+                            missed_items = [
+                                item for item in feedback_data 
+                                if item['email'] not in processed_emails
+                            ]
+                            
+                            if missed_items:
+                                missed_df = pd.DataFrame([
+                                    {
+                                        'Email': item['email'],
+                                        'Feedback': item['feedback'],
+                                        'Possible Reason': 'Item was skipped during processing'
+                                    }
+                                    for item in missed_items
+                                ])
+                                
+                                st.dataframe(
+                                    missed_df,
+                                    column_config={
+                                        "Email": st.column_config.TextColumn(
+                                            width="medium"
+                                        ),
+                                        "Feedback": st.column_config.TextColumn(
+                                            width="large"
+                                        ),
+                                        "Possible Reason": st.column_config.TextColumn(
+                                            width="medium"
+                                        )
+                                    },
+                                    hide_index=True
+                                )
+                                
+                                # Add download button for missed items
+                                csv = missed_df.to_csv(index=False).encode('utf-8')
+                                st.download_button(
+                                    "Download Missed Items CSV",
+                                    csv,
+                                    "missed_items.csv",
+                                    "text/csv",
+                                    key='download-missed-csv'
+                                )
+
+                        # After the category distribution and missed items sections
+                        if len(results) > 1:
+                            st.write("### 📈 Category Distribution Chart")
+                            
+                            # Prepare data for charts
+                            category_counts = {}
+                            sentiment_by_category = {}
+                            
+                            for result in valid_results:
+                                category = result['category']
+                                sentiment = result['sentiment']
+                                
+                                # Count categories
+                                if category not in category_counts:
+                                    category_counts[category] = 0
+                                    sentiment_by_category[category] = {'positive': 0, 'negative': 0, 'neutral': 0}
+                                
+                                category_counts[category] += 1
+                                sentiment_by_category[category][sentiment] += 1
+                            
+                            # Create two columns for charts
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                # Category distribution pie chart
+                                fig_pie = go.Figure(data=[go.Pie(
+                                    labels=list(category_counts.keys()),
+                                    values=list(category_counts.values()),
+                                    hole=0.4,
+                                    textinfo='label+percent',
+                                    hoverinfo='label+value'
+                                )])
+                                fig_pie.update_layout(
+                                    title='Feedback Categories',
+                                    showlegend=False,
+                                    height=400
+                                )
+                                st.plotly_chart(fig_pie, use_container_width=True)
+                            
+                            with col2:
+                                # Sentiment distribution by category bar chart
+                                categories = list(sentiment_by_category.keys())
+                                positive_vals = [sentiment_by_category[cat]['positive'] for cat in categories]
+                                negative_vals = [sentiment_by_category[cat]['negative'] for cat in categories]
+                                neutral_vals = [sentiment_by_category[cat]['neutral'] for cat in categories]
+                                
+                                fig_bar = go.Figure()
+                                
+                                # Add bars for each sentiment
+                                fig_bar.add_trace(go.Bar(
+                                    name='Positive',
+                                    x=categories,
+                                    y=positive_vals,
+                                    marker_color='green'
+                                ))
+                                fig_bar.add_trace(go.Bar(
+                                    name='Neutral',
+                                    x=categories,
+                                    y=neutral_vals,
+                                    marker_color='gray'
+                                ))
+                                fig_bar.add_trace(go.Bar(
+                                    name='Negative',
+                                    x=categories,
+                                    y=negative_vals,
+                                    marker_color='red'
+                                ))
+                                
+                                fig_bar.update_layout(
+                                    title='Sentiment by Category',
+                                    barmode='stack',
+                                    height=400,
+                                    showlegend=True,
+                                    xaxis_tickangle=-45,
+                                    yaxis_title='Number of Feedback Items'
+                                )
+                                st.plotly_chart(fig_bar, use_container_width=True)
+                            
+                            # Add a table with detailed statistics
+                            st.write("### 📊 Detailed Statistics")
+                            stats_data = []
+                            for category in categories:
+                                total = category_counts[category]
+                                sentiments = sentiment_by_category[category]
+                                stats_data.append({
+                                    'Category': category,
+                                    'Total Items': total,
+                                    'Positive': f"{sentiments['positive']} ({(sentiments['positive']/total*100):.1f}%)",
+                                    'Neutral': f"{sentiments['neutral']} ({(sentiments['neutral']/total*100):.1f}%)",
+                                    'Negative': f"{sentiments['negative']} ({(sentiments['negative']/total*100):.1f}%)"
+                                })
+                            
+                            stats_df = pd.DataFrame(stats_data)
+                            st.dataframe(
+                                stats_df,
+                                column_config={
+                                    "Category": st.column_config.TextColumn(
+                                        width="medium"
+                                    ),
+                                    "Total Items": st.column_config.NumberColumn(
+                                        width="small"
+                                    ),
+                                    "Positive": st.column_config.TextColumn(
+                                        width="small"
+                                    ),
+                                    "Neutral": st.column_config.TextColumn(
+                                        width="small"
+                                    ),
+                                    "Negative": st.column_config.TextColumn(
+                                        width="small"
+                                    )
+                                },
+                                hide_index=True
+                            )
                 except Exception as e:
                     st.error(f"⚠️ Error processing file: {e}")
                     logging.error(f"Error details: ", exc_info=True)
