@@ -1,147 +1,161 @@
-# This file is used to process the feedback from the user
-# - what to do with the feedback : 
-#    - tagging the feedback as positive, negative or neutral
-#    - categorizing the feedback
-#    - summarizing the feedback based on categories
-#    - finding the most common issues
-# It will use the llm_service to get the response from the llm
-# It will then save the response to the database
+"""
+Feedback Processing Service
+
+This module handles batch processing of user feedback through:
+- Sentiment analysis
+- Categorization
+- Summarization
+- Common issues identification
+
+It coordinates between the LLM service for analysis and database service for storage.
+"""
 
 from typing import Dict, List, Optional
-from enum import Enum
-from .llm_service import LLMService
+import logging
+from datetime import datetime
+
+from .llm_service import LLMService, ModelName
 from .database_service import DatabaseService
-import asyncio
+from .models.feedback_models import FeedbackItem, ProcessedFeedback
+from .config.processing_config import BatchConfig
 
-class FeedbackSentiment(Enum):
-    POSITIVE = "positive"
-    NEGATIVE = "negative"
-    NEUTRAL = "neutral"
+# Configure logging
+logger = logging.getLogger(__name__)
 
-    @classmethod
-    def from_string(cls, value: str) -> 'FeedbackSentiment':
-        """Convert string to FeedbackSentiment, handling common variations"""
-        # Clean the input string
-        cleaned = value.lower().strip().strip('.')
+class FeedbackProcessor:
+    """Service for batch processing feedback"""
+    
+    def __init__(
+        self,
+        model: ModelName = ModelName.MIXTRAL,
+        batch_size: int = BatchConfig.DEFAULT_BATCH_SIZE,
+        db_service: Optional[DatabaseService] = None
+    ):
+        """
+        Initialize the feedback processor
         
-        # Map common variations to standard values
-        sentiment_map = {
-            'positive': cls.POSITIVE,
-            'pos': cls.POSITIVE,
-            'good': cls.POSITIVE,
-            
-            'negative': cls.NEGATIVE,
-            'neg': cls.NEGATIVE,
-            'bad': cls.NEGATIVE,
-            
-            'neutral': cls.NEUTRAL,
-            'neu': cls.NEUTRAL,
-            'mixed': cls.NEUTRAL
-        }
+        Args:
+            model: LLM model to use for processing
+            batch_size: Number of feedback items to process in each batch
+            db_service: Database service for storing results
+        """
+        self.llm_service = LLMService(model=model)
+        self.db_service = db_service or DatabaseService()
+        self.batch_size = BatchConfig.validate_batch_size(batch_size)
+
+    async def process_feedback_batch(self, feedback_items: List[Dict]) -> List[Dict]:
+        """
+        Process a batch of feedback items efficiently
         
-        # Try to get the mapped sentiment, default to neutral if not found
-        return sentiment_map.get(cleaned, cls.NEUTRAL)
+        Args:
+            feedback_items: List of dictionaries containing feedback data
+            
+        Returns:
+            List of processed feedback results as dictionaries
+        """
+        results: List[ProcessedFeedback] = []
+        
+        # Process in batches to minimize API calls
+        for i in range(0, len(feedback_items), self.batch_size):
+            batch = feedback_items[i:i + self.batch_size]
+            
+            try:
+                # Convert batch to FeedbackItems
+                feedback_batch = [
+                    FeedbackItem(
+                        text=item['feedback'],
+                        email=item.get('email', '')
+                    ) for item in batch
+                ]
 
-class ProcessFeedbackService:
-    def __init__(self, llm_service: LLMService, db_service: DatabaseService, batch_size: int = 50):
-        self.llm_service = llm_service
-        self.db_service = db_service
-        self.batch_size = batch_size
+                # Process entire batch at once
+                processed_batch = await self._process_feedback_batch(feedback_batch)
+                
+                # Save results and add to output
+                for feedback_item, processed_result in zip(feedback_batch, processed_batch):
+                    result = ProcessedFeedback(
+                        email=feedback_item.email,
+                        original_feedback=feedback_item.text,
+                        sentiment=processed_result['sentiment'],
+                        categories=processed_result['categories'],
+                        summary=processed_result['summary'],
+                        created_at=datetime.now().isoformat()
+                    )
+                    await self.db_service.save_processed_feedback(result.to_dict())
+                    results.append(result)
+                
+            except Exception as e:
+                logger.error(f"Error processing batch: {str(e)}", exc_info=True)
+                # Add error results for the entire batch
+                for item in batch:
+                    feedback_item = FeedbackItem(
+                        text=item['feedback'],
+                        email=item.get('email', '')
+                    )
+                    error_result = ProcessedFeedback.create_error_response(
+                        feedback_item, 
+                        f"Batch processing error: {str(e)}"
+                    )
+                    results.append(error_result)
+                
+        # Convert all results to dictionaries before returning
+        return [result.to_dict() for result in results]
 
-    async def process_feedback_batch(self, feedbacks: List[Dict[str, str]]) -> List[Dict]:
-        """Process a batch of feedback entries"""
-        results = []
+    async def _process_feedback_batch(self, feedback_items: List[FeedbackItem]) -> List[Dict]:
+        """
+        Process a batch of feedback items in a single API call
+        
+        Args:
+            feedback_items: List of FeedbackItem objects
+            
+        Returns:
+            List of processed results from LLM
+        """
+        # Prepare batch text
+        feedback_texts = [item.text for item in feedback_items]
+        
+        # Process entire batch in one API call
+        return await self.llm_service.process_feedback_batch(feedback_texts)
+
+    async def analyze_common_issues(self, feedbacks: List[str]) -> Dict[str, int]:
+        """
+        Analyze multiple pieces of feedback to identify common issues
+        
+        Args:
+            feedbacks: List of feedback texts to analyze
+            
+        Returns:
+            Dictionary mapping issue categories to their frequency
+        """
+        all_categories: List[str] = []
         
         # Process in batches
         for i in range(0, len(feedbacks), self.batch_size):
             batch = feedbacks[i:i + self.batch_size]
-            
-            # Process each aspect in batch
-            sentiments = await self._analyze_sentiments_batch([f['feedback'] for f in batch])
-            categories = await self._categorize_feedback_batch([f['feedback'] for f in batch])
-            summaries = await self._summarize_feedback_batch([f['feedback'] for f in batch])
-            
-            # Combine results
-            for j, feedback in enumerate(batch):
-                result = {
-                    "email": feedback.get('email', ''),
-                    "original_feedback": feedback['feedback'],
-                    "sentiment": sentiments[j],
-                    "categories": categories[j],
-                    "summary": summaries[j]
-                }
-                await self.db_service.save_processed_feedback(result)
-                results.append(result)
-                
-        return results
+            try:
+                batch_results = await self.llm_service.process_feedback_batch(batch)
+                for result in batch_results:
+                    all_categories.extend(result['categories'])
+            except Exception as e:
+                logger.error(f"Error in batch analysis: {str(e)}", exc_info=True)
+                continue
 
-    async def _analyze_sentiments_batch(self, feedbacks: List[str]) -> List[FeedbackSentiment]:
-        """Analyze sentiments for a batch of feedbacks"""
-        prompt = (
-            "Analyze the sentiment of each feedback below. "
-            "For each feedback, respond with exactly one word (positive, negative, or neutral) "
-            "in a numbered list.\n\n"
-        )
-        for i, feedback in enumerate(feedbacks, 1):
-            prompt += f"{i}. {feedback}\n"
-        
-        response = await self.llm_service.get_response_safe(prompt)
-        
-        # Parse response into list of sentiments
-        sentiment_lines = [line.split('.', 1)[1].strip() if '.' in line else line.strip() 
-                         for line in response.split('\n') if line.strip()]
-        
-        return [FeedbackSentiment.from_string(sent) for sent in sentiment_lines]
+        return self._count_and_sort_categories(all_categories)
 
-    async def _categorize_feedback_batch(self, feedbacks: List[str]) -> List[List[str]]:
-        """Categorize a batch of feedbacks"""
-        prompt = (
-            "Categorize each feedback below into relevant categories. "
-            "For each feedback, provide a comma-separated list of categories "
-            "in a numbered list.\n\n"
-        )
-        for i, feedback in enumerate(feedbacks, 1):
-            prompt += f"{i}. {feedback}\n"
-        
-        response = await self.llm_service.get_response_safe(prompt)
-        
-        # Parse response into list of category lists
-        category_lines = [line.split('.', 1)[1].strip() if '.' in line else line.strip() 
-                         for line in response.split('\n') if line.strip()]
-        
-        return [
-            [cat.strip() for cat in line.split(',')]
-            for line in category_lines
-        ]
+    @staticmethod
+    def _count_and_sort_categories(categories: List[str]) -> Dict[str, int]:
+        """Count and sort categories by frequency"""
+        category_counts = {}
+        for category in set(categories):
+            count = categories.count(category)
+            if count > 0:
+                category_counts[category] = count
 
-    async def _summarize_feedback_batch(self, feedbacks: List[str]) -> List[str]:
-        """Summarize a batch of feedbacks"""
-        prompt = (
-            "Provide a brief summary for each feedback below. "
-            "For each feedback, provide a one-line summary "
-            "in a numbered list.\n\n"
-        )
-        for i, feedback in enumerate(feedbacks, 1):
-            prompt += f"{i}. {feedback}\n"
-        
-        response = await self.llm_service.get_response_safe(prompt)
-        
-        # Parse response into list of summaries
-        return [line.split('.', 1)[1].strip() if '.' in line else line.strip() 
-                for line in response.split('\n') if line.strip()]
-
-    async def analyze_common_issues(self, feedbacks: List[str]) -> Dict[str, int]:
-        """Analyze multiple pieces of feedback to find common issues"""
-        # Process in batches for large datasets
-        all_categories = []
-        for i in range(0, len(feedbacks), self.batch_size):
-            batch = feedbacks[i:i + self.batch_size]
-            categories_batch = await self._categorize_feedback_batch(batch)
-            for cats in categories_batch:
-                all_categories.extend(cats)
-        
-        return dict((category, all_categories.count(category)) 
-                   for category in set(all_categories))
+        return dict(sorted(
+            category_counts.items(),
+            key=lambda x: x[1],
+            reverse=True
+        ))
 
 
 

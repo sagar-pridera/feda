@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
-from backend.process_feedback_service import ProcessFeedbackService
-from backend.llm_service import LLMService
-from backend.database_service import DatabaseService
+from backend.process_feedback_service import FeedbackProcessor
+from backend.llm_service import ModelName
 import asyncio
 import logging
 
-# Add at the start of your main.py
+# Configure logging
 logging.basicConfig(
     level=logging.WARNING,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -14,6 +13,12 @@ logging.basicConfig(
 
 def main():
     st.title("Feda AI")
+    
+    # Initialize processor
+    processor = FeedbackProcessor(
+        model=ModelName.MIXTRAL,
+        batch_size=50
+    )
 
     # Add batch size selector
     batch_size = st.sidebar.slider(
@@ -24,16 +29,6 @@ def main():
         step=10,
         help="Number of feedback entries to process at once"
     )
-
-    # Initialize services with selected batch size
-    @st.cache_resource
-    def init_services(batch_size):
-        llm_service = LLMService()
-        db_service = DatabaseService()
-        asyncio.run(db_service.initialize())
-        return ProcessFeedbackService(llm_service, db_service, batch_size=batch_size)
-
-    process_feedback_service = init_services(batch_size)
 
     uploaded_file = st.file_uploader("Choose a file", type=['csv', 'xls', 'xlsx', 'json'])
 
@@ -87,7 +82,7 @@ def main():
                     batch = feedback_data[i:i + batch_size]
                     with st.spinner(f'Processing batch {(i//batch_size)+1}/{total_batches}...'):
                         batch_results = asyncio.run(
-                            process_feedback_service.process_feedback_batch(batch)
+                            processor.process_feedback_batch(batch)
                         )
                         results.extend(batch_results)
                     
@@ -95,25 +90,93 @@ def main():
                     progress_bar.progress((i + len(batch)) / len(feedback_data))
                 
                 # Convert results to DataFrame for display
-                results_df = pd.DataFrame(results)
-                st.write("### Processed Feedback Results:")
-                st.dataframe(results_df)
+                if len(results) > 0:
+                    results_df = pd.DataFrame(results)
+                    
+                    # Format the categories column to display as comma-separated string
+                    results_df['categories'] = results_df['categories'].apply(lambda x: ', '.join(x) if isinstance(x, list) else x)
+                    
+                    # Reorder columns if needed
+                    columns_order = ['email', 'original_feedback', 'sentiment', 'categories', 'summary', 'created_at']
+                    results_df = results_df[columns_order]
+                    
+                    st.write("### Processed Feedback Results:")
+                    st.dataframe(
+                        results_df,
+                        column_config={
+                            "email": st.column_config.TextColumn("Email"),
+                            "original_feedback": st.column_config.TextColumn("Original Feedback"),
+                            "sentiment": st.column_config.TextColumn("Sentiment"),
+                            "categories": st.column_config.TextColumn("Categories"),
+                            "summary": st.column_config.TextColumn("Summary"),
+                            "created_at": st.column_config.DatetimeColumn("Created At")
+                        },
+                        hide_index=False
+                    )
                 
                 # Show common issues analysis
                 if len(results) > 1:
                     with st.spinner('Analyzing common issues...'):
                         common_issues = asyncio.run(
-                            process_feedback_service.analyze_common_issues(
+                            processor.analyze_common_issues(
                                 [r['original_feedback'] for r in results]
                             )
                         )
                         
+                        # First show the common issues chart
                         st.write("### Common Issues Analysis:")
                         issues_df = pd.DataFrame(
                             list(common_issues.items()), 
                             columns=['Category', 'Count']
                         ).sort_values('Count', ascending=False)
                         st.bar_chart(issues_df.set_index('Category'))
+
+                        # Then show the detailed category analysis
+                        st.write("### Detailed Category Breakdown:")
+                        
+                        # Create a DataFrame for category details
+                        detailed_analysis = []
+                        for category, count in common_issues.items():
+                            # Find all feedback that matches this category
+                            matching_feedback = [
+                                {
+                                    'feedback': r['original_feedback'],
+                                    'sentiment': r['sentiment'],
+                                    'summary': r['summary']
+                                }
+                                for r in results 
+                                if category in r['categories']
+                            ]
+                            
+                            # Add to detailed analysis
+                            detailed_analysis.append({
+                                'Category': category,
+                                'Count': count,
+                                'Examples': matching_feedback
+                            })
+                        
+                        # Create and display the detailed table
+                        for analysis in detailed_analysis:
+                            with st.expander(f"📊 {analysis['Category']} ({analysis['Count']} items)"):
+                                examples_df = pd.DataFrame(analysis['Examples'])
+                                st.dataframe(
+                                    examples_df,
+                                    column_config={
+                                        "feedback": st.column_config.TextColumn(
+                                            "Feedback",
+                                            width="large"
+                                        ),
+                                        "sentiment": st.column_config.TextColumn(
+                                            "Sentiment",
+                                            width="small"
+                                        ),
+                                        "summary": st.column_config.TextColumn(
+                                            "Summary",
+                                            width="medium"
+                                        )
+                                    },
+                                    hide_index=True
+                                )
 
         except Exception as e:
             st.error(f"Error processing file: {e}")
